@@ -1,1 +1,13 @@
-name: external-owner-ci
+name: trusted-ci
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+permissions:
+  contents: read
+jobs:
+  trusted-ci:
+    name: trusted-ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pass inert trusted check
+        run: echo 'Trusted qualification check passed without candidate checkout.'

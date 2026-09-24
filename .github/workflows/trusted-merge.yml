@@ -1,0 +1,57 @@
+name: trusted-merge
+run-name: ${{ inputs.operation_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      operation_id: {required: true, type: string}
+      pull_request: {required: true, type: string}
+      expected_base: {required: true, type: string}
+      expected_head: {required: true, type: string}
+      expected_tree: {required: true, type: string}
+      expected_merge: {required: true, type: string}
+      commit_time: {required: true, type: string}
+      publication_id: {required: true, type: string}
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Construct and atomically update the protected target
+        env:
+          EXPECTED_BASE: ${{ inputs.expected_base }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_TREE: ${{ inputs.expected_tree }}
+          EXPECTED_MERGE: ${{ inputs.expected_merge }}
+          COMMIT_TIME: ${{ inputs.commit_time }}
+          PUBLICATION_ID: ${{ inputs.publication_id }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          export GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1
+          export HOME="$RUNNER_TEMP/trusted-home"
+          mkdir -p "$HOME"
+          git init --bare "$RUNNER_TEMP/trusted.git"
+          cd "$RUNNER_TEMP/trusted.git"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags "https://github.com/$REPOSITORY.git" \
+            "+refs/heads/main:refs/trusted/base" \
+            "+refs/pull/${{ inputs.pull_request }}/head:refs/trusted/head"
+          test "$(git rev-parse refs/trusted/base^{commit})" = "$EXPECTED_BASE"
+          test "$(git rev-parse refs/trusted/head^{commit})" = "$EXPECTED_HEAD"
+          test "$(git show -s --format=%T "$EXPECTED_HEAD")" = "$EXPECTED_TREE"
+          export GIT_AUTHOR_NAME='Agent Engineering Platform'
+          export GIT_AUTHOR_EMAIL='trusted-infra@example.invalid'
+          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+          export GIT_AUTHOR_DATE="$COMMIT_TIME" GIT_COMMITTER_DATE="$COMMIT_TIME"
+          MERGE=$(printf 'Merge trusted publication %s\n' "$PUBLICATION_ID" | \
+            git -c core.hooksPath=/dev/null commit-tree "$EXPECTED_TREE" -p "$EXPECTED_BASE" -p "$EXPECTED_HEAD")
+          test "$MERGE" = "$EXPECTED_MERGE"
+          test "$(git show -s --format=%P "$MERGE")" = "$EXPECTED_BASE $EXPECTED_HEAD"
+          test "$(git show -s --format=%T "$MERGE")" = "$EXPECTED_TREE"
+          git -c core.hooksPath=/dev/null \
+            -c http.https://github.com/.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+            push --porcelain --force-with-lease="refs/heads/main:$EXPECTED_BASE" \
+            "https://github.com/$REPOSITORY.git" "$MERGE:refs/heads/main"
